@@ -5,6 +5,8 @@
 Запускаем mongodb и приложение
 
 ```shell
+cd C:\h\a\f\software-architect-cource\labs\sprint-4\architecture-black_friday
+cd C:/h/a/f/software-architect-cource/labs/sprint-4/architecture-black_friday
 docker compose up -d
 ```
 
