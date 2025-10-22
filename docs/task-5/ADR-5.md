@@ -3,118 +3,158 @@
 Адаптация системы хранения «Мобильный мир» к динамическим, нерегулярным и предсказуемый скачкам трафика.
 # Решение
 
-Внедрение внешнего L2 кэша
-
-**Основные сервисы**
-
-| Сервис              | Роль                                                                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **configSrv**       | Узел mongoDB, Хранит метаданные о распределении данных                                                       |
-| **mongos_router**   | Роутер mongoDB, принимает запросы → спрашивает `configSrv` → направляет в нужный шард                        |
-| **pymango-api**     | backend-api                                                                                                  |
-| **Replica Set**     | чтобы данные дублировались внутри региона и система не падала при сбое одного узла.                          |
-| **Primary-shard**   | принимает запиcm                                                                                             |
-| **Secondary-shard** | получает копию от primary                                                                                    |
-| **Arbiter**         | голосует при выборе нового Primary (если старый упал), но не хранит данные. Дает гарантию нечетного кворума. |
-| **redis**           | служба L2-кэша                                                                                               |
+Для балансировки нагрузки повышения устойчивости системы вводим контейнеры (сервисы)
+ - APISIX Gateaway
+   - роли
+     1. Авторизация запросов
+     2. Балансировка нагрузки, маршрутизация
+     3. Безопасность (WAF, CORS, Rate limiting)
+   - Consul
+     - роли
+       1. Регистрация, поиск сервисов
+       2. Мониторинг здоровья сервисов
+       3. Хранилище конфигурации сервисов
 
 ### Схема сервисов
-
-```mermaid
-graph TD
-    %% Сеть Docker
-    subgraph "Docker Bridge Network: app-network"
-        direction TB
-
-        A[configSrv<br><small>Mongo Config Server</small><br><i>173.17.0.10:27017</i>]:::config
-
-        B[mongos_router<br><small>Mongo Router</small><br><i>173.17.0.7:27020</i>]:::router
-
-        %% Shard 1 как Replica Set
-        subgraph "Shard 1 Replica Set"
-            C[shard1-primary<br><small>Primary</small><br><i>173.17.0.9:27018</i>]:::shard
-            D[shard1-secondary<br><small>Secondary</small><br><i>173.17.0.4:27018</i>]:::shard
-            E[shard1-arbiter<br><small>Arbiter</small><br><i>173.17.0.5:27018</i>]:::arbiter
-            C <---> D
-            D <---> E
-            E <---> C
-        end
-
-        %% Shard 2 как Replica Set
-        subgraph "Shard 2 Replica Set"
-            F[shard2-primary<br><small>Primary</small><br><i>173.17.0.8:27019</i>]:::shard
-            G[shard2-secondary<br><small>Secondary</small><br><i>173.17.0.6:27019</i>]:::shard
-            H[shard2-arbiter<br><small>Arbiter</small><br><i>173.17.0.3:27019</i>]:::arbiter
-            F <---> G
-            G <---> H
-            H <---> F
-        end
-
-        I[backend-api<br><small>Node.js / Spring Boot</small><br><i>173.17.0.2:3000</i>]:::api
-        J[redis<br><small>Кэш данных</small><br><i>173.17.0.1:6379</i>]:::cache
-
-        %% Связи
-        I -->|Read/Write| B
-        I -->|Cache| J
-        J -->|Data store| I
-        B -->|Metadate query| A
-        B -->|Route to shard1| C
-        B -->|Route to shard2| F
-    end
-
-    %% Стили
-    classDef config fill:#f8d7da,stroke:#c66,border:2px solid #c66,color:#721c24;
-    classDef router fill:#cce5ff,stroke:#004085,stroke-width:2px,color:#004085;
-    classDef shard fill:#d4edda,stroke:#155724,stroke-width:2px,color:#155724;
-    classDef arbiter fill:#e9ecef,stroke:#6c757d,stroke-dasharray:5,5,color:#6c757d;
-    classDef api fill:#e2e3e5,stroke:#383d41,stroke-width:2px,color:#383d41;
-    classDef cache fill:#ffd54f,stroke:#e6a82e,stroke-width:2px,color:#333;
-
-    style A fill:#f8d7da,stroke:#c66
-    style B fill:#cce5ff,stroke:#004085
-    style I fill:#e2e3e5,stroke:#383d41
-    style J fill:#ffd54f,stroke:#e6a82e
-```
 
 ---
 ### схема сервисов drawio
 схема
-![task1-TO-BE_ADR3.drawio.png](task1-TO-BE_ADR3.drawio.png)
-
+![task1-taks5_ADR5.drawio.png](task1-taks5_ADR5.drawio.png)
 ---
 
-### Схема последовательности взаимодействия сервисов
-
+### Схема взаимодействия сервисов
 ```mermaid
-sequenceDiagram
-    product ->> pymango-api: GET /product/123
-    pymango-api ->> redis: GET product:123
-    alt В кэше есть
-        redis -->> pymango-api: Данные из Redis
-        pymango-api -->> product: Ответ
-    else Нет в кэше
-        pymango-api ->> mongos_router: Запрос к MongoDB
-        mongos_router ->> shard1: Поиск по ID
-        shard1 -->> mongos_router: Документ
-        mongos_router -->> pymango-api: Данные
-        pymango-api ->> redis: SET product:123 {...}
-        pymango-api -->> product: Ответ
-    end
+graph TD
+%% ========== CLIENT LAYER ==========
+    CLIENT[User] -->|HTTP запросы| APISIX[APISIX Gateway]
+
+%% ========== GATEWAY LAYER ==========
+    APISIX -->|Service Discovery запрос| CONSUL[Consul Server]
+
+%% ========== SERVICE DISCOVERY LAYER ==========
+    CONSUL -->|чтение/запись| CONSUL_KV[Consul KV Store]
+
+%% ========== APPLICATION LAYER ==========
+    APISIX -->|балансировка нагрузки| API1[Java Service<br>Pymango-api 1]
+    APISIX -->|балансировка нагрузки| API2[Java Service<br>Pymango-api 2]
+    APISIX -->|балансировка нагрузки| API3[Java Service<br>Pymango-api 3]
+
+%% Service Registration
+    API1 -->|регистрация + healthcheck| CONSUL
+    API2 -->|регистрация + healthcheck| CONSUL
+    API3 -->|регистрация + healthcheck| CONSUL
+
+%% ========== CACHE LAYER ==========
+    API1 -->|кэширование чтений| REDIS[Redis Cache]
+    API2 -->|кэширование чтений| REDIS
+    API3 -->|кэширование чтений| REDIS
+
+%% ========== DATABASE LAYER ==========
+%% MongoDB Router
+    API1 -->|запросы данных| MONGOS[MongoS Router]
+    API2 -->|запросы данных| MONGOS
+    API3 -->|запросы данных| MONGOS
+
+%% Config Server
+    MONGOS -->|метаданные кластера| CONFIGSRV[Config Server]
+
+%% Shard 1 - Replica Set
+    MONGOS -->|маршрутизация| SHARD1_PRIMARY[Shard1 Primary]
+    SHARD1_PRIMARY -->|репликация| SHARD1_SECONDARY1[Shard1 Secondary 1]
+    SHARD1_PRIMARY -->|репликация| SHARD1_SECONDARY2[Shard1 Secondary 2]
+
+%% Shard 2 - Replica Set  
+    MONGOS -->|маршрутизация| SHARD2_PRIMARY[Shard2 Primary]
+    SHARD2_PRIMARY -->|репликация| SHARD2_SECONDARY1[Shard2 Secondary 1]
+    SHARD2_PRIMARY -->|репликация| SHARD2_SECONDARY2[Shard2 Secondary 2]
+
+%% ========== STYLING ==========
+classDef client fill:#3498db,stroke:#fff,color:#fff
+classDef gateway fill:#9b59b6,stroke:#fff,color:#fff
+classDef discovery fill:#f39c12,stroke:#fff,color:#fff
+classDef application fill:#2ecc71,stroke:#fff,color:#fff
+classDef cache fill:#ff6b6b,stroke:#fff,color:#fff
+classDef database fill:#45b7d1,stroke:#fff,color:#fff
+
+class CLIENT client
+class APISIX gateway
+class CONSUL,CONSUL_KV discovery
+class API1,API2,API3 application
+class REDIS cache
+class MONGOS,CONFIGSRV,SHARD1_PRIMARY,SHARD1_SECONDARY1,SHARD1_SECONDARY2,SHARD2_PRIMARY,SHARD2_SECONDARY1,SHARD2_SECONDARY2 database
+
+
+%% ========== LINK STYLING ==========
+%% Client to Gateway
+linkStyle 0 stroke:#3498db,stroke-width:2px
+
+%% Service Discovery
+linkStyle 1 stroke:#f39c12,stroke-width:2px
+linkStyle 2 stroke:#f39c12,stroke-width:2px,stroke-dasharray: 5,5
+
+%% Service Registration
+linkStyle 3 stroke:#27ae60,stroke-width:2px,stroke-dasharray: 5,5
+linkStyle 4 stroke:#27ae60,stroke-width:2px,stroke-dasharray: 5,5
+linkStyle 5 stroke:#27ae60,stroke-width:2px,stroke-dasharray: 5,5
+
+%% Load Balancing
+linkStyle 6 stroke:#9b59b6,stroke-width:2px
+linkStyle 7 stroke:#9b59b6,stroke-width:2px
+linkStyle 8 stroke:#9b59b6,stroke-width:2px
+
+%% Cache Connections
+linkStyle 9 stroke:#e74c3c,stroke-width:2px
+linkStyle 10 stroke:#e74c3c,stroke-width:2px
+linkStyle 11 stroke:#e74c3c,stroke-width:2px
+
+%% Database Connections
+linkStyle 12 stroke:#3498db,stroke-width:2px
+linkStyle 13 stroke:#3498db,stroke-width:2px
+linkStyle 14 stroke:#3498db,stroke-width:2px
+
+%% MongoDB Internal
+linkStyle 15 stroke:#2980b9,stroke-width:2px
+linkStyle 16 stroke:#2980b9,stroke-width:2px
+linkStyle 17 stroke:#2980b9,stroke-width:2px
+linkStyle 18 stroke:#2980b9,stroke-width:2px
+linkStyle 19 stroke:#2980b9,stroke-width:2px
+linkStyle 20 stroke:#2980b9,stroke-width:2px
 ```
 
 ---
 
-### Схема последовательности репликации
+### Последовательность взаимодействий сервисов
 ```mermaid
 sequenceDiagram
-    mongos_router ->> shard1-primary: INSERT {product:"PC-T800"}
-    shard1-primary -->> shard1-secondary: Реплицирует данные
-    shard1-primary -->> shard1-arbiter: Голосует за статус
-    shard1-arbiter -->> shard1-primary: Подтверждает кворум
-    shard1-primary -->> mongos_router: OK
+    participant C as Client
+    participant G as APISIX
+    participant Consul as Consul
+    participant API as Java Service
+    participant R as Redis
+    participant M as MongoDB
+    
+    C->>G: GET /api/products/123
+    G->>Consul: Get healthy java-service instances
+    Consul->>G: [API1:8080, API2:8080, API3:8080]
+    G->>API: Route to API1
+    API->>R: Check cache for "product:123"
+    R->>API: Cache miss
+    API->>M: Query MongoDB
+    M->>API: Product data
+    API->>R: Cache product:123
+    API->>G: Response
+    G->>C: Product data
 ```
+---
 
 # Последствия
 
-* кратное снижение нагрузки на систему хранения
-* риск того, что клиент получит устаревшие данные.
+1. рост стоимость потребляемых ресурсов
+2. устойчивость в экстремальным нагрузками, DDOS-атакам
+3. кратный прирост стабильности сервиса
+4. повышенные SLA гарантий по метрикам 
+   1. время отклика (ms)
+   2. пропускной способности приложения (RPS)
+   3. времени доступности сервиса (%)
+   4. задержка передачи данных (p <= %)  
