@@ -21,7 +21,7 @@
 ### Схема сервисов
 
 ```mermaid
-graph TD
+graph LR
     %% Сеть Docker
     subgraph "Docker Bridge Network: app-network"
         direction TB

@@ -18,14 +18,14 @@
 ### Схема сервисов
 
 ---
-### схема сервисов drawio
+### Cхема сервисов drawio
 схема
 ![task1-taks5_ADR5.drawio.png](task1-taks5_ADR5.drawio.png)
 ---
 
 ### Схема взаимодействия сервисов
 ```mermaid
-graph TD
+graph LR
 %% ========== CLIENT LAYER ==========
     CLIENT[User] -->|HTTP запросы| APISIX[APISIX Gateway]
 
