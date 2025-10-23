@@ -69,7 +69,7 @@ graph TD
     end
 
     %% Потоки данных (Верхний уровень)
-    A -->| | B
+    A -->| | B 
     A -->| | G
 
     B --> C
@@ -94,6 +94,8 @@ graph TD
     %% Взаимодействие между ЦОД (двунаправленное)
     F1_db <--> F2_db
     F2_db <--> F3_db
+
+    linkStyle 1 stroke:#CD5C5C,stroke-width:2px,stroke-dasharray: 5,5
     
 
 ```
